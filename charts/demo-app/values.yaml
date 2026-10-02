@@ -1,0 +1,38 @@
+replicaCount: 2
+
+image:
+  # The CI pipeline rewrites `tag` on every build (GitOps). Repository is set
+  # to your ECR by the setup step / CI env.
+  repository: REPLACE_WITH_ECR_REGISTRY/demo-app
+  tag: "latest"
+  pullPolicy: IfNotPresent
+
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: 5000
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 250m
+    memory: 128Mi
+
+# Readiness/liveness use the app's /healthz endpoint
+healthCheck:
+  path: /healthz
+  port: 5000
+
+# Prometheus scrape annotation so the monitoring stack picks up /metrics
+metrics:
+  enabled: true
+  path: /metrics
+  port: 5000
+
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 5
+  targetCPUUtilization: 70

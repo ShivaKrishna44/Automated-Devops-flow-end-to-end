@@ -1,0 +1,6 @@
+# Orchestrator + MCP server deps.
+# CrewAI needs Python 3.10-3.13 (NOT 3.14). run.py works without CrewAI too
+# (direct orchestration fallback), but the narrated multi-agent path needs it.
+fastmcp>=0.2.0
+crewai>=0.60.0
+python-dotenv>=1.0.0

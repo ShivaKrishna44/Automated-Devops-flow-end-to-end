@@ -1,0 +1,23 @@
+# ArgoCD Application — points at this repo's Helm chart. Once applied, ArgoCD
+# continuously syncs the cluster to match charts/demo-app in Git (GitOps).
+# The Deploy agent fills in REPLACE_WITH_REPO_URL with the real repo.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: demo-app
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: REPLACE_WITH_REPO_URL
+    targetRevision: main
+    path: charts/demo-app
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: default
+  syncPolicy:
+    automated:
+      prune: true        # remove resources deleted from Git
+      selfHeal: true     # revert manual drift back to Git state
+    syncOptions:
+      - CreateNamespace=true

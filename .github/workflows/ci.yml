@@ -1,0 +1,59 @@
+name: CI - Build & Push demo-app
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'app/**'
+      - 'charts/**'
+      - '.github/workflows/**'
+  workflow_dispatch:
+
+permissions:
+  id-token: write    # OIDC — required to mint the token for AWS
+  contents: write    # to commit the updated image tag back (GitOps)
+
+env:
+  AWS_REGION: us-east-1
+  # Set these as repo Variables (Settings -> Secrets and variables -> Actions):
+  #   AWS_ROLE_ARN   = terraform output github_ci_role_arn
+  #   ECR_REGISTRY   = <account>.dkr.ecr.us-east-1.amazonaws.com
+  AWS_ROLE_ARN: ${{ vars.AWS_ROLE_ARN }}
+  ECR_REGISTRY: ${{ vars.ECR_REGISTRY }}
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Set image tag
+        id: tag
+        run: echo "tag=${GITHUB_SHA::12}" >> "$GITHUB_OUTPUT"
+
+      - name: Build & push
+        run: |
+          REPO="${ECR_REGISTRY}/demo-app"
+          docker build -t "${REPO}:${{ steps.tag.outputs.tag }}" -t "${REPO}:latest" ./app
+          docker push "${REPO}:${{ steps.tag.outputs.tag }}"
+          docker push "${REPO}:latest"
+
+      - name: Update Helm values with new tag (GitOps)
+        run: |
+          sed -i "s|tag:.*|tag: \"${{ steps.tag.outputs.tag }}\"|" charts/demo-app/values.yaml
+          sed -i "s|repository:.*|repository: ${ECR_REGISTRY}/demo-app|" charts/demo-app/values.yaml
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add charts/demo-app/values.yaml
+          git diff --staged --quiet || git commit -m "ci: deploy demo-app:${{ steps.tag.outputs.tag }}"
+          git pull --rebase origin main
+          git push

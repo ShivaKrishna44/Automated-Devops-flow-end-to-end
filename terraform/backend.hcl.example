@@ -1,0 +1,7 @@
+# Copy to backend.hcl and fill in. The bucket + DynamoDB table must already
+# exist (create once, see README). backend.hcl is gitignored.
+bucket         = "your-tf-state-bucket"
+key            = "automated-devops-flow/terraform.tfstate"
+region         = "us-east-1"
+encrypt        = true
+dynamodb_table = "your-tf-lock-table"
