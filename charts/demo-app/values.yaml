@@ -3,8 +3,8 @@ replicaCount: 2
 image:
   # The CI pipeline rewrites `tag` on every build (GitOps). Repository is set
   # to your ECR by the setup step / CI env.
-  repository: REPLACE_WITH_ECR_REGISTRY/demo-app
-  tag: "latest"
+  repository: 589389425618.dkr.ecr.us-east-1.amazonaws.com/demo-app
+  tag: "d2681ce3e6e3"
   pullPolicy: IfNotPresent
 
 service:
