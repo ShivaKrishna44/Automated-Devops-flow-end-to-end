@@ -13,12 +13,17 @@ spec:
     metadata:
       labels:
         app: {{ .Release.Name }}
-      {{- if .Values.metrics.enabled }}
       annotations:
+        # Restart pods when the ConfigMap changes: this checksum changes with
+        # the config, which changes the pod template, which triggers a rolling
+        # restart so the app picks up new config. (env vars are frozen at start,
+        # so without this a ConfigMap change wouldn't reach a running pod.)
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- if .Values.metrics.enabled }}
         prometheus.io/scrape: "true"
         prometheus.io/path: {{ .Values.metrics.path | quote }}
         prometheus.io/port: {{ .Values.metrics.port | quote }}
-      {{- end }}
+        {{- end }}
     spec:
       containers:
         - name: {{ .Release.Name }}
@@ -26,6 +31,10 @@ spec:
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           ports:
             - containerPort: {{ .Values.service.targetPort }}
+          # Inject all ConfigMap keys as env vars (APP_VERSION, LOG_LEVEL, GREETING)
+          envFrom:
+            - configMapRef:
+                name: {{ .Release.Name }}-config
           readinessProbe:
             httpGet:
               path: {{ .Values.healthCheck.path }}

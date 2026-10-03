@@ -8,12 +8,23 @@ from flask import Flask, jsonify
 
 app = Flask(__name__)
 
+# These come from the ConfigMap (via envFrom in the Helm deployment). Changing
+# them in values.yaml -> commit -> ArgoCD re-sync -> rolling restart -> new
+# values live, with no image rebuild.
 VERSION = os.getenv("APP_VERSION", "1.0.0")
+LOG_LEVEL = os.getenv("LOG_LEVEL", "info")
+GREETING = os.getenv("GREETING", "Hello")
 
 
 @app.route("/")
 def home():
-    return jsonify(service="demo-app", status="running", version=VERSION)
+    return jsonify(
+        service="demo-app",
+        status="running",
+        version=VERSION,
+        log_level=LOG_LEVEL,
+        greeting=GREETING,
+    )
 
 
 @app.route("/healthz")

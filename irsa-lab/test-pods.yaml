@@ -1,0 +1,31 @@
+# Two pods to PROVE IRSA scoping:
+#
+#   irsa-pod      — uses the irsa-demo-sa ServiceAccount. Should be able to
+#                   assume the role and read the bucket.
+#   no-irsa-pod   — uses the default ServiceAccount (no role annotation).
+#                   Should NOT be able to assume the role at all.
+#
+# Both just sleep so you can `kubectl exec` into them and run aws commands.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: irsa-pod
+  namespace: default
+spec:
+  serviceAccountName: irsa-demo-sa      # <-- the annotated SA = gets the role
+  containers:
+    - name: aws
+      image: amazon/aws-cli:latest
+      command: ["sleep", "3600"]
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: no-irsa-pod
+  namespace: default
+spec:
+  # no serviceAccountName -> uses "default" SA, which has NO role annotation
+  containers:
+    - name: aws
+      image: amazon/aws-cli:latest
+      command: ["sleep", "3600"]

@@ -126,6 +126,21 @@ def get_terraform_output(name: str) -> str:
     return _run(["terraform", "output", "-raw", name], cwd=TERRAFORM_DIR)
 
 
+@mcp.tool
+def configure_kubectl(dummy: str = "") -> str:
+    """READ-ish: point kubectl at the cluster via `aws eks update-kubeconfig`.
+    Idempotent, no infra change — just updates the local kubeconfig so every
+    subsequent kubectl/helm call targets the right cluster. Reads the cluster
+    name from terraform output."""
+    _audit("configure_kubectl", True)
+    cluster = _run(["terraform", "output", "-raw", "cluster_name"], cwd=TERRAFORM_DIR).strip()
+    if not cluster or "ERROR" in cluster:
+        return f"ERROR: could not read cluster_name from terraform output: {cluster}"
+    out = _run(["aws", "eks", "update-kubeconfig", "--name", cluster, "--region", REGION])
+    nodes = _run(["kubectl", "get", "nodes"])
+    return f"kubeconfig -> {cluster}\n{out}\n=== NODES ===\n{nodes}"
+
+
 # ==========================================================================
 # WRITE TOOLS (destructive/costly — each requires an approval token)
 # ==========================================================================
@@ -218,6 +233,33 @@ def argocd_sync_app(repo_url: str, app_name: str = "demo-app") -> str:
             os.unlink(tmp_path)
         except OSError:
             pass
+
+
+@mcp.tool
+def install_alb_controller(dummy: str = "") -> str:
+    """WRITE (GATED): install the AWS Load Balancer Controller via Helm, wired
+    to its IRSA role (from terraform output alb_controller_role_arn)."""
+    ok, reason = require_approval("install_alb_controller")
+    if not ok:
+        _audit("install_alb_controller", False, reason)
+        return f"BLOCKED: {reason}"
+    _audit("install_alb_controller", True)
+
+    cluster = _run(["terraform", "output", "-raw", "cluster_name"], cwd=TERRAFORM_DIR).strip()
+    role_arn = _run(["terraform", "output", "-raw", "alb_controller_role_arn"], cwd=TERRAFORM_DIR).strip()
+    if "ERROR" in cluster or "ERROR" in role_arn:
+        return f"ERROR reading terraform outputs: cluster={cluster} role={role_arn}"
+
+    _run(["helm", "repo", "add", "eks", "https://aws.github.io/eks-charts"])
+    _run(["helm", "repo", "update"])
+    return _run([
+        "helm", "upgrade", "--install", "aws-load-balancer-controller",
+        "eks/aws-load-balancer-controller", "-n", "kube-system",
+        "--set", f"clusterName={cluster}",
+        "--set", "serviceAccount.create=true",
+        "--set", "serviceAccount.name=aws-load-balancer-controller",
+        "--set", f"serviceAccount.annotations.eks\\.amazonaws\\.com/role-arn={role_arn}",
+    ], timeout=600)
 
 
 @mcp.tool

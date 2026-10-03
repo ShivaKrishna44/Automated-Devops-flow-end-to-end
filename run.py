@@ -3,28 +3,29 @@ Automated DevOps Flow — single-command entrypoint.
 
     python run.py --repo-url https://github.com/<you>/<repo>.git
 
-Runs the full lifecycle in order, pausing for human approval before each
-destructive/costly step (terraform apply, argocd install/sync, monitoring):
+Runs the FULL lifecycle in order, from one command, pausing only for human
+approval before each destructive/costly step:
 
-    1. INFRA     terraform plan  -> [APPROVE] -> terraform apply (EKS)
-    2. CI        wait for GitHub Actions to push demo-app image to ECR
-    3. DEPLOY    install ArgoCD -> apply Application (GitOps)
-    4. MONITOR   install Prometheus + Grafana
-    5. VERIFY    end-to-end health check, PASS/FAIL
+    0. INFRA     terraform plan -> [APPROVE terraform_apply] -> apply (EKS)
+    1. KUBECTL   aws eks update-kubeconfig (automatic, no gate)
+    2. ALB       [APPROVE install_alb_controller] -> helm install
+    3. CI        reminder/confirm GitHub Actions pushed the image to ECR
+    4. DEPLOY    [APPROVE install_argocd] -> install ArgoCD
+                 [APPROVE argocd_sync_app] -> apply Application (GitOps)
+    5. MONITOR   [APPROVE install_monitoring] -> Prometheus + Grafana
+    6. VERIFY    end-to-end health check -> PASS/FAIL
 
-Teardown (separate, also gated):
+Teardown (also gated):
     python run.py --teardown
 
-Design: the agents orchestrate; the real actions run through the MCP server's
-tools (mcp_server/server.py), and every write tool is blocked unless a human
-ran `python approve.py <action> --actor <you>` first. This keeps "less human
-interaction" true for everything EXCEPT the few steps that create/destroy
-billable, hard-to-reverse cloud resources — those stay human-approved on
-purpose.
+Everything except the gated steps runs unattended. The gated steps are the
+few that create/destroy billable, hard-to-reverse cloud resources — those
+stay human-approved on purpose. Approve each in a SECOND terminal with:
+    python approve.py <action> --actor <you>
 
-This entrypoint uses a direct orchestration path (calls the same MCP tool
-functions) so it runs with or without CrewAI/an LLM installed. With CrewAI +
-an LLM configured, agents/crew.py provides the narrated multi-agent version.
+This entrypoint calls the MCP tool functions directly (works with or without
+CrewAI/an LLM installed). With CrewAI configured, agents/crew.py adds the
+narrated multi-agent layer on top of these same tools.
 """
 
 import argparse
@@ -33,8 +34,6 @@ import sys
 import time
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "mcp_server"))
-# We import the tool *functions* directly for the fallback orchestrator. In the
-# CrewAI path these same functions are exposed as MCP tools to the agents.
 import server as mcp  # noqa: E402
 from approval import status as approval_status  # noqa: E402
 
@@ -46,75 +45,97 @@ def banner(step: str, msg: str) -> None:
 
 
 def need_approval(action: str) -> None:
-    """Pause and tell the human exactly how to approve a gated step."""
     print(f"\n⏸  '{action}' is a GATED step (destructive/costly).")
-    print(f"   In a SEPARATE terminal, a human must run:")
+    print(f"   In a SECOND terminal, a human runs:")
     print(f"       python approve.py {action} --actor <your-name>")
-    print(f"   Then press Enter here to continue (or Ctrl-C to abort).")
+    print(f"   Then press Enter here to continue (Ctrl-C to abort).")
     input()
 
 
+def _check(out: str, phase: str) -> None:
+    if out.startswith("BLOCKED") or "ERROR" in out[:300] or "Error" in out[:300]:
+        print(out)
+        raise SystemExit(f"[{phase}] did not succeed — fix/approve and re-run.")
+    print(out)
+
+
 def phase_infra() -> None:
-    banner("PHASE 1 — INFRA", "Terraform plan, then human-approved apply")
+    banner("PHASE 0 — INFRA", "terraform plan, then human-approved apply")
     print(mcp.terraform_plan())
     need_approval("terraform_apply")
-    out = mcp.terraform_apply()
-    print(out)
-    if out.startswith("BLOCKED") or "ERROR" in out[:200]:
-        raise SystemExit("Infra apply did not succeed — stopping. Approve and retry.")
+    _check(mcp.terraform_apply(), "INFRA")
+
+
+def phase_kubectl() -> None:
+    banner("PHASE 1 — KUBECTL", "point kubectl at the new cluster (automatic)")
+    _check(mcp.configure_kubectl(), "KUBECTL")
+
+
+def phase_alb() -> None:
+    banner("PHASE 2 — ALB CONTROLLER", "install AWS Load Balancer Controller")
+    need_approval("install_alb_controller")
+    _check(mcp.install_alb_controller(), "ALB")
 
 
 def phase_ci() -> None:
-    banner("PHASE 2 — CI", "Waiting for GitHub Actions to build & push demo-app")
-    print("GitHub Actions builds the image on push to main. This phase assumes")
-    print("the workflow has run (or you triggered it). Confirming ECR image...")
-    repo_url = mcp.get_terraform_output("ecr_repository_url")
-    print(f"ECR repo: {repo_url}")
-    print("(Trigger CI via a push or the Actions 'Run workflow' button if not done.)")
+    banner("PHASE 3 — CI", "GitHub Actions builds & pushes demo-app to ECR")
+    repo = mcp.get_terraform_output("ecr_repository_url")
+    print(f"ECR repo: {repo}")
+    print("GitHub Actions (ci.yml) builds on push to main and commits the new")
+    print("image tag into charts/demo-app/values.yaml. Make sure the repo's")
+    print("Actions Variables are set: AWS_ROLE_ARN, ECR_REGISTRY.")
+    print("Press Enter once the CI run has succeeded (image in ECR).")
+    input()
 
 
 def phase_deploy(repo_url: str) -> None:
-    banner("PHASE 3 — DEPLOY", "Install ArgoCD + apply Application (GitOps)")
+    banner("PHASE 4 — DEPLOY", "install ArgoCD + apply Application (GitOps)")
     need_approval("install_argocd")
-    print(mcp.install_argocd())
-    print("Waiting for ArgoCD to come up...")
-    time.sleep(30)
+    _check(mcp.install_argocd(), "ARGOCD-INSTALL")
+    print("Waiting for ArgoCD server to come up...")
+    time.sleep(40)
     need_approval("argocd_sync_app")
-    print(mcp.argocd_sync_app(repo_url=repo_url))
+    _check(mcp.argocd_sync_app(repo_url=repo_url), "ARGOCD-SYNC")
 
 
 def phase_monitoring() -> None:
-    banner("PHASE 4 — MONITORING", "Install Prometheus + Grafana")
+    banner("PHASE 5 — MONITORING", "install Prometheus + Grafana")
     need_approval("install_monitoring")
-    print(mcp.install_monitoring())
+    _check(mcp.install_monitoring(), "MONITORING")
 
 
 def phase_verify() -> None:
-    banner("PHASE 5 — VERIFY", "End-to-end health check")
+    banner("PHASE 6 — VERIFY", "end-to-end health check")
     print(mcp.cluster_health())
-    print("ArgoCD app status:", mcp.get_argocd_app_status())
+    print("\nArgoCD app status:", mcp.get_argocd_app_status())
     print("Prometheus targets down:", mcp.check_targets())
-    print("\n✅ Flow complete. Review the output above for PASS/FAIL per phase.")
+    print("\n✅ Flow complete. Reach the app:")
+    print("   kubectl port-forward svc/demo-app 8080:80")
+    print("   curl http://localhost:8080/")
 
 
 def teardown() -> None:
-    banner("TEARDOWN", "Destroy ALL demo infra (gated)")
-    print("This destroys the EKS cluster, VPC, ECR, IAM — everything.")
+    banner("TEARDOWN", "destroy ALL demo infra (gated)")
+    print("Destroys EKS, VPC, ECR, IAM. Delete ArgoCD app / Helm releases FIRST")
+    print("so no orphaned ALBs linger.")
     need_approval("terraform_destroy")
     print(mcp.terraform_destroy())
-    print("\n⚠️  Manual cleanup check (Terraform may not remove these):")
-    print("   - EC2 -> Volumes: delete any orphaned EBS volumes")
-    print("   - EC2 -> Snapshots / AMIs: delete any left behind")
-    print("   - Any LoadBalancers created by Services/Ingress (delete the")
-    print("     Helm releases / ArgoCD app BEFORE destroy to avoid orphaned ALBs)")
+    print("\n⚠️  Manual cleanup check:")
+    print("   - EC2 Volumes / Snapshots / AMIs left behind")
+    print("   - any LoadBalancers from Services/Ingress")
+    print("   - the EKS CloudWatch log group + KMS alias (AWS keeps these):")
+    print("       aws logs delete-log-group --log-group-name /aws/eks/<cluster>/cluster --region <r>")
+    print("       aws kms delete-alias --alias-name alias/eks/<cluster> --region <r>")
 
 
 def main() -> int:
     p = argparse.ArgumentParser(description="Automated DevOps Flow — one command.")
     p.add_argument("--repo-url", help="Git repo URL ArgoCD deploys from")
-    p.add_argument("--teardown", action="store_true", help="destroy everything")
+    p.add_argument("--teardown", action="store_true")
+    p.add_argument("--skip-infra", action="store_true",
+                   help="infra already applied; start from kubectl config")
     p.add_argument("--skip-ci-wait", action="store_true",
-                   help="don't pause for CI (if the image is already pushed)")
+                   help="don't pause for CI (image already in ECR)")
     args = p.parse_args()
 
     if args.teardown:
@@ -125,10 +146,14 @@ def main() -> int:
         print("ERROR: --repo-url is required (the repo ArgoCD deploys from).")
         return 1
 
-    print("Approvals currently on record:", approval_status() or "(none)")
+    print("Approvals on record:", approval_status() or "(none)")
 
-    phase_infra()
-    phase_ci()
+    if not args.skip_infra:
+        phase_infra()
+    phase_kubectl()
+    phase_alb()
+    if not args.skip_ci_wait:
+        phase_ci()
     phase_deploy(args.repo_url)
     phase_monitoring()
     phase_verify()

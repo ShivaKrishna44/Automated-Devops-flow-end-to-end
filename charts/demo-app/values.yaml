@@ -36,3 +36,10 @@ autoscaling:
   minReplicas: 2
   maxReplicas: 5
   targetCPUUtilization: 70
+
+# Non-secret runtime config, injected into the app via a ConfigMap (envFrom).
+# Change these, commit, and ArgoCD re-syncs — no image rebuild needed.
+config:
+  appVersion: "1.0.0"
+  logLevel: "info"
+  greeting: "Hello from the Automated DevOps Flow demo"

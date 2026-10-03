@@ -53,15 +53,20 @@ destructive/costly action without a human having approved it first.
    AWS (EKS/VPC/ECR/IAM) · GitHub Actions · ArgoCD · Prometheus/Grafana
 ```
 
-### The five phases (what one command does)
+### The phases (what one command does)
 
-| Phase | Agent | Does | Gated? |
-|-------|-------|------|--------|
-| 1. Infra | Infrastructure | `terraform plan` → **approve** → `apply` (EKS, VPC, ECR, IAM, OIDC) | ✅ apply |
-| 2. CI | CI | GitHub Actions builds image → pushes to ECR → commits new tag | — (runs in GitHub) |
-| 3. Deploy | Deployment | install ArgoCD → apply Application → GitOps sync of the Helm chart | ✅ both |
-| 4. Monitor | Monitoring | install kube-prometheus-stack (Prometheus + Grafana) | ✅ install |
-| 5. Verify | Verification | nodes/pods healthy, ArgoCD synced, Prometheus targets up → PASS/FAIL | — (read only) |
+| Phase | Does | Gated? |
+|-------|------|--------|
+| 0. Infra | `terraform plan` → **approve** → `apply` (EKS, VPC, ECR, IAM, OIDC) | ✅ `terraform_apply` |
+| 1. Kubectl | `aws eks update-kubeconfig` — points kubectl at the new cluster | — (automatic) |
+| 2. ALB | install AWS Load Balancer Controller (wired to its IRSA role) | ✅ `install_alb_controller` |
+| 3. CI | GitHub Actions builds image → pushes to ECR → commits new tag | — (runs in GitHub) |
+| 4. Deploy | install ArgoCD → apply Application → GitOps sync of the Helm chart | ✅ `install_argocd`, `argocd_sync_app` |
+| 5. Monitor | install kube-prometheus-stack (Prometheus + Grafana) | ✅ `install_monitoring` |
+| 6. Verify | nodes/pods healthy, ArgoCD synced, Prometheus targets up → PASS/FAIL | — (read only) |
+
+The kubectl config and verify phases are automatic (no approval). Everything
+that creates/destroys billable cloud resources is approval-gated.
 
 ---
 
@@ -69,7 +74,10 @@ destructive/costly action without a human having approved it first.
 
 ```
 app/                      demo Flask app + Dockerfile (/, /healthz, /metrics)
-charts/demo-app/          Helm chart (deployment, service, hpa)
+charts/demo-app/          Helm chart (deployment, service, hpa, configmap)
+                          └─ ConfigMap feeds APP_VERSION/LOG_LEVEL/GREETING to
+                             the app via envFrom; a checksum annotation rolls
+                             the pods when config changes (GitOps config demo)
 terraform/                VPC, EKS, ECR, GitHub OIDC role + IRSA
 .github/workflows/ci.yml  OIDC build → ECR → GitOps commit
 deploy/argocd-application.yaml   ArgoCD App (GitOps source of truth)
@@ -112,24 +120,40 @@ run.py                    single-command entrypoint (+ --teardown)
 # 0. init terraform (once)
 cd terraform && terraform init -backend-config=backend.hcl && cd ..
 
-# 1. one command drives the whole flow
-python run.py --repo-url https://github.com/<you>/Automated-Devops-flow-end-to-end.git
+# 1. ONE COMMAND drives the whole flow (infra -> kubectl -> ALB -> CI -> deploy -> monitor -> verify)
+python run.py --repo-url https://github.com/ShivaKrishna44/Automated-Devops-flow-end-to-end.git
+
+# If infra is ALREADY applied, skip phase 0 and start from kubectl config:
+python run.py --repo-url https://github.com/ShivaKrishna44/Automated-Devops-flow-end-to-end.git --skip-infra
 ```
 
-At each gated step the run **pauses** and tells you the exact approval command.
-In a second terminal, a human approves:
+At each gated step the run **pauses** and prints the exact approval command.
+In a SECOND terminal, a human approves (single-use, TTL'd):
 ```bash
-python approve.py terraform_apply --actor <you>     # then press Enter in run.py
-# ...later, when prompted:
-python approve.py install_argocd --actor <you>
-python approve.py argocd_sync_app --actor <you>
-python approve.py install_monitoring --actor <you>
+python approve.py terraform_apply        --actor <you>   # phase 0 (skip if --skip-infra)
+python approve.py install_alb_controller --actor <you>   # phase 2
+python approve.py install_argocd         --actor <you>   # phase 4
+python approve.py argocd_sync_app        --actor <you>   # phase 4
+python approve.py install_monitoring     --actor <you>   # phase 5
 ```
+After each approve, press Enter in the `run.py` terminal to continue.
 
-After CI pushes the image, set the GitHub repo variables so the pipeline's
-OIDC auth works:
+**Before the deploy phase shows your app, CI must have pushed the image.** Set
+the GitHub repo **Actions Variables** (Settings → Secrets and variables →
+Actions → Variables) so CI's OIDC auth works, then push to `main` to trigger it:
 - `AWS_ROLE_ARN` = `terraform output -raw github_ci_role_arn`
-- `ECR_REGISTRY` = `<account>.dkr.ecr.us-east-1.amazonaws.com`
+  (e.g. `arn:aws:iam::589389425618:role/autoflow-github-ci`)
+- `ECR_REGISTRY` = `terraform output -raw ecr_repository_url` without the
+  `/demo-app` suffix (e.g. `589389425618.dkr.ecr.us-east-1.amazonaws.com`)
+
+If the deploy runs before CI has pushed an image, the pods will be in
+`ImagePullBackOff` — trigger/finish CI, then let ArgoCD re-sync.
+
+### Reach the app after the flow completes
+```bash
+kubectl port-forward svc/demo-app 8080:80
+curl http://localhost:8080/        # {"service":"demo-app","status":"running",...}
+```
 
 ---
 
