@@ -45,7 +45,7 @@ def banner(step: str, msg: str) -> None:
 
 
 def need_approval(action: str) -> None:
-    print(f"\n⏸  '{action}' is a GATED step (destructive/costly).")
+    print(f"\n[PAUSE] '{action}' is a GATED step (destructive/costly).")
     print(f"   In a SECOND terminal, a human runs:")
     print(f"       python approve.py {action} --actor <your-name>")
     print(f"   Then press Enter here to continue (Ctrl-C to abort).")
@@ -55,30 +55,30 @@ def need_approval(action: str) -> None:
 def _check(out: str, phase: str) -> None:
     if out.startswith("BLOCKED") or "ERROR" in out[:300] or "Error" in out[:300]:
         print(out)
-        raise SystemExit(f"[{phase}] did not succeed — fix/approve and re-run.")
+        raise SystemExit(f"[{phase}] did not succeed - fix/approve and re-run.")
     print(out)
 
 
 def phase_infra() -> None:
-    banner("PHASE 0 — INFRA", "terraform plan, then human-approved apply")
+    banner("PHASE 0 - INFRA", "terraform plan, then human-approved apply")
     print(mcp.terraform_plan())
     need_approval("terraform_apply")
     _check(mcp.terraform_apply(), "INFRA")
 
 
 def phase_kubectl() -> None:
-    banner("PHASE 1 — KUBECTL", "point kubectl at the new cluster (automatic)")
+    banner("PHASE 1 - KUBECTL", "point kubectl at the new cluster (automatic)")
     _check(mcp.configure_kubectl(), "KUBECTL")
 
 
 def phase_alb() -> None:
-    banner("PHASE 2 — ALB CONTROLLER", "install AWS Load Balancer Controller")
+    banner("PHASE 2 - ALB CONTROLLER", "install AWS Load Balancer Controller")
     need_approval("install_alb_controller")
     _check(mcp.install_alb_controller(), "ALB")
 
 
 def phase_ci() -> None:
-    banner("PHASE 3 — CI", "GitHub Actions builds & pushes demo-app to ECR")
+    banner("PHASE 3 - CI", "GitHub Actions builds & pushes demo-app to ECR")
     repo = mcp.get_terraform_output("ecr_repository_url")
     print(f"ECR repo: {repo}")
     print("GitHub Actions (ci.yml) builds on push to main and commits the new")
@@ -89,7 +89,7 @@ def phase_ci() -> None:
 
 
 def phase_deploy(repo_url: str) -> None:
-    banner("PHASE 4 — DEPLOY", "install ArgoCD + apply Application (GitOps)")
+    banner("PHASE 4 - DEPLOY", "install ArgoCD + apply Application (GitOps)")
     need_approval("install_argocd")
     _check(mcp.install_argocd(), "ARGOCD-INSTALL")
     print("Waiting for ArgoCD server to come up...")
@@ -99,17 +99,17 @@ def phase_deploy(repo_url: str) -> None:
 
 
 def phase_monitoring() -> None:
-    banner("PHASE 5 — MONITORING", "install Prometheus + Grafana")
+    banner("PHASE 5 - MONITORING", "install Prometheus + Grafana")
     need_approval("install_monitoring")
     _check(mcp.install_monitoring(), "MONITORING")
 
 
 def phase_verify() -> None:
-    banner("PHASE 6 — VERIFY", "end-to-end health check")
+    banner("PHASE 6 - VERIFY", "end-to-end health check")
     print(mcp.cluster_health())
     print("\nArgoCD app status:", mcp.get_argocd_app_status())
     print("Prometheus targets down:", mcp.check_targets())
-    print("\n✅ Flow complete. Reach the app:")
+    print("\n Flow complete. Reach the app:")
     print("   kubectl port-forward svc/demo-app 8080:80")
     print("   curl http://localhost:8080/")
 
@@ -120,7 +120,7 @@ def teardown() -> None:
     print("so no orphaned ALBs linger.")
     need_approval("terraform_destroy")
     print(mcp.terraform_destroy())
-    print("\n⚠️  Manual cleanup check:")
+    print("\n  Manual cleanup check:")
     print("   - EC2 Volumes / Snapshots / AMIs left behind")
     print("   - any LoadBalancers from Services/Ingress")
     print("   - the EKS CloudWatch log group + KMS alias (AWS keeps these):")

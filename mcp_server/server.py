@@ -41,13 +41,35 @@ REGION = os.getenv("AWS_REGION", "us-east-1")
 # --------------------------------------------------------------------------
 # helpers
 # --------------------------------------------------------------------------
-def _run(cmd: list, cwd: str | None = None, timeout: int = 600) -> str:
-    """Run a command, return combined output. Not shell=True (no injection)."""
+def _run(cmd: list, cwd: str | None = None, timeout: int = 600, stream: bool = True) -> str:
+    """Run a command. By default STREAMS output live to the terminal (so you
+    can see long operations like `terraform apply` progressing in real time)
+    while also capturing it to return. Set stream=False for quiet calls.
+    Not shell=True (no injection)."""
+    import time as _time
+    print(f"\n$ {' '.join(cmd)}", flush=True)
     try:
-        r = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout)
-        return (r.stdout or "") + (r.stderr or "")
-    except subprocess.TimeoutExpired:
-        return f"ERROR: command timed out after {timeout}s: {' '.join(cmd)}"
+        if not stream:
+            r = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout)
+            return (r.stdout or "") + (r.stderr or "")
+
+        # Stream: merge stderr into stdout, print each line as it arrives.
+        proc = subprocess.Popen(
+            cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, bufsize=1,
+        )
+        lines = []
+        start = _time.time()
+        assert proc.stdout is not None
+        for line in proc.stdout:
+            print(line, end="", flush=True)   # live to terminal
+            lines.append(line)
+            if _time.time() - start > timeout:
+                proc.kill()
+                lines.append(f"\nERROR: command exceeded {timeout}s, killed.\n")
+                break
+        proc.wait()
+        return "".join(lines)
     except Exception as e:  # noqa: BLE001
         return f"ERROR: {e}"
 

@@ -19,6 +19,7 @@ from approval import grant, status  # noqa: E402
 ACTIONS = {
     "terraform_apply": "Provision EKS + VPC + ECR + IAM. Creates BILLABLE AWS resources.",
     "terraform_destroy": "DESTROY all demo infra. Irreversible.",
+    "install_alb_controller": "Install the AWS Load Balancer Controller (Helm) into the cluster.",
     "install_argocd": "Install ArgoCD into the cluster.",
     "argocd_sync_app": "Create the ArgoCD Application and start deploying the app.",
     "install_monitoring": "Install Prometheus + Grafana (kube-prometheus-stack).",
@@ -57,7 +58,7 @@ def main() -> int:
             return 1
 
     grant(args.action, args.actor)
-    print(f"✅ Approved '{args.action}' as {args.actor}. Valid for a limited time, single-use.")
+    print(f"Approved '{args.action}' as {args.actor}. Valid for a limited time, single-use.")
     return 0
 
 
